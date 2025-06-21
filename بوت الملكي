@@ -1,0 +1,215 @@
+import requests
+import pandas as pd
+import numpy as np
+import ta.momentum # لاستخدام RSI و Stochastic
+import ta.trend    # لاستخدام MACD و ADX
+import ta.volume   # لاستخدام OBV
+import ta.volatility # لاستخدام ATR و BBands
+from scipy.fft import fft
+from datetime import datetime
+
+# --- إعداداتك ---
+# Finnhub API
+FINNHUB_API_KEY = "d16st71r01qkv5jd4pp0d16s1"  # مفتاحك من الصورة (تأكد من أنه صحيح لديك)
+SYMBOL = "AAPL"  # رمز السهم (يمكنك تغييره لأي سهم أو مؤشر)
+INTERVAL = "D"   # الفاصل الزمني: "D" يومي، "60" لكل ساعة
+LIMIT = 70       # عدد الشموع المطلوبة
+
+# Telegram
+BOT_TOKEN = "7868253928:AAHQ6sKrkdA2VoSm0p_9ZlA6iFGn_TQugBU" # <--- هذا هو التوكن الصحيح الذي زودتني به
+CHAT_ID = "60519721" # تأكد من أن هذا الـ CHAT_ID صحيح، وهو معرف الدردشة التي تريد إرسال الرسائل إليها
+
+# --- جلب بيانات الأسعار من finnhub ---
+def fetch_finnhub_ohlc(symbol, limit=70, interval="D"):
+    url = f"https://finnhub.io/api/v1/stock/candle"
+    params = {
+        "symbol": symbol,
+        "resolution": interval,
+        "count": limit,
+        "token": FINNHUB_API_KEY
+    }
+    resp = requests.get(url, params=params)
+    data = resp.json()
+    if data.get('s') != 'ok':
+        raise Exception(f"Finnhub Error: {data}")
+    df = pd.DataFrame({
+        'open': data['o'],
+        'high': data['h'],
+        'low': data['l'],
+        'close': data['c'],
+        'volume': data['v']
+    })
+    return df
+
+# --- المؤشرات الفنية ووحدة القرار (معدلة لاستخدام مكتبة 'ta') ---
+def indicator_rsi(data):
+    if len(data) < 14: return pd.Series([np.nan])
+    return ta.momentum.RSIIndicator(data['close'], window=14).rsi()
+
+def indicator_macd(data):
+    if len(data) < 26: return pd.Series([np.nan])
+    macd = ta.trend.MACD(data['close'], window_fast=12, window_slow=26, window_sign=9).macd()
+    return macd
+
+def indicator_obv(data):
+    if len(data) < 2: return pd.Series([np.nan])
+    return ta.volume.OnBalanceVolumeIndicator(data['close'], data['volume']).on_balance_volume()
+
+def indicator_ema(data, p):
+    if len(data) < p: return pd.Series([np.nan])
+    return ta.trend.EMAIndicator(data['close'], window=p).ema_indicator()
+
+def indicator_atr(data):
+    if len(data) < 14: return pd.Series([np.nan])
+    return ta.volatility.AverageTrueRange(data['high'], data['low'], data['close'], window=14).average_true_range()
+
+def indicator_adx(data):
+    if len(data) < 14: return pd.Series([np.nan])
+    # ADX في مكتبة ta يتم حسابها بشكل مباشر، لكن للحصول على قيمة واحدة مثل talib، قد نحتاج لأخذ آخر قيمة من سلسلة المؤشر
+    return ta.trend.ADXIndicator(data['high'], data['low'], data['close'], window=14).adx()
+
+def indicator_cci(data):
+    if len(data) < 20: return pd.Series([np.nan])
+    return ta.momentum.CCIIndicator(data['high'], data['low'], data['close'], window=20).cci()
+
+def indicator_bbw(data): # Bollinger Bands Width
+    if len(data) < 20: return pd.Series([np.nan])
+    bb = ta.volatility.BollingerBands(data['close'], window=20)
+    # لحساب عرض نطاق بولينجر: (Upper Band - Lower Band) / Middle Band
+    return (bb.bollinger_hband() - bb.bollinger_lband()) / bb.bollinger_mavg()
+
+def indicator_vwap(data):
+    return (data['close'] * data['volume']).cumsum() / data['volume'].cumsum()
+
+def indicator_market_maker_fingerprint_instant(data):
+    if len(data) < 3: return pd.Series([np.nan])
+    return ((data['close'] - data['open']) / data['open'] * 100).rolling(window=3).mean()
+
+def indicator_gamma(data):
+    if len(data) < 10: return pd.Series([np.nan])
+    hl = data['high'] - data['low']
+    return (hl / data['close']).rolling(window=10).mean()
+
+def indicator_liquidity(data):
+    if len(data) < 5: return pd.Series([np.nan])
+    return data['volume'].rolling(window=5).mean()
+
+def indicator_hidden_liquidity(data):
+    if len(data) < 5: return pd.Series([np.nan])
+    return (data['volume'] * (data['close'] - data['low'])).rolling(window=5).mean()
+
+def indicator_fourier_resonance(data):
+    if len(data) < 64: return 0
+    prices = data['close'].values[-64:]
+    y = fft(prices)
+    freqs = np.fft.fftfreq(len(prices))
+    dom = freqs[np.argmax(np.abs(y[1:])) + 1]
+    return 1 / dom if dom != 0 else 0
+
+def indicator_ema_cross(data):
+    if len(data) < 20: return pd.Series([np.nan])
+    ema_short = ta.trend.EMAIndicator(data['close'], window=5).ema_indicator()
+    ema_long = ta.trend.EMAIndicator(data['close'], window=20).ema_indicator()
+    return ema_short - ema_long
+
+def indicator_williams_r(data):
+    if len(data) < 14: return pd.Series([np.nan])
+    return ta.momentum.WilliamsRIndicator(data['high'], data['low'], data['close'], window=14).williams_r()
+
+def indicator_roc(data):
+    if len(data) < 10: return pd.Series([np.nan])
+    return ta.momentum.ROCIndicator(data['close'], window=10).roc()
+
+def indicator_stochastic(data):
+    if len(data) < 3: return pd.Series([np.nan])
+    # في مكتبة ta، ستحصل على K و D من نفس الاستدعاء، ويمكنك طرحهما
+    stoch_indicator = ta.momentum.StochasticOscillator(data['high'], data['low'], data['close'])
+    slowk = stoch_indicator.stoch_signal() # عادةً ما يكون هذا هو الـ D
+    slowd = stoch_indicator.stoch_percent_k() # وهذا هو الـ K
+    return slowd - slowk # تأكد من الترتيب الصحيح للطرح K - D أو D - K حسب استراتيجيتك
+
+def indicator_turtle_wave(data):
+    if len(data) < 20: return pd.Series([np.nan])
+    return (data['close'] - data['low']).rolling(window=20).mean()
+
+def decision_engine_full(data):
+    if len(data) < 65:
+        return "⚠ البيانات غير كافية للتحليل!"
+
+    score = 0
+    thresholds = {
+        'rsi': 70,
+        'macd': 0,
+        'adx': 20,
+        'gamma': 0,
+        'resonance': 3.5,
+        'ema_cross': 0
+    }
+
+    def safe_get(val):
+        return val if pd.notna(val) else 0
+
+    indicators = {
+        'rsi': safe_get(indicator_rsi(data).iloc[-1]),
+        'macd': safe_get(indicator_macd(data).iloc[-1]),
+        'obv': safe_get(indicator_obv(data).iloc[-1]),
+        'ema_cross': safe_get(indicator_ema_cross(data).iloc[-1]),
+        'atr': safe_get(indicator_atr(data).iloc[-1]),
+        'adx': safe_get(indicator_adx(data).iloc[-1]),
+        'cci': safe_get(indicator_cci(data).iloc[-1]),
+        'bbw': safe_get(indicator_bbw(data).iloc[-1]),
+        'vwap': safe_get(indicator_vwap(data).iloc[-1]),
+        'fingerprint': safe_get(indicator_market_maker_fingerprint_instant(data).iloc[-1]),
+        'gamma': safe_get(indicator_gamma(data).iloc[-1]),
+        'liquidity': safe_get(indicator_liquidity(data).iloc[-1]),
+        'hidden_liq': safe_get(indicator_hidden_liquidity(data).iloc[-1]),
+        'resonance': indicator_fourier_resonance(data),
+        'roc': safe_get(indicator_roc(data).iloc[-1]),
+        'williams': safe_get(indicator_williams_r(data).iloc[-1]),
+        'stoch': safe_get(indicator_stochastic(data).iloc[-1]),
+        'turtle': safe_get(indicator_turtle_wave(data).iloc[-1])
+    }
+
+    for k in ['rsi', 'macd', 'adx', 'gamma', 'resonance', 'ema_cross']:
+        if (k in thresholds) and (indicators[k] > thresholds[k]):
+            score += 1
+
+    close_price = safe_get(data['close'].iloc[-1])
+    atr = indicators['atr']
+    time_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    reco_id = f"SPX-{int(datetime.now().timestamp())}"
+
+    if atr < 15:
+        return f"⚠ السوق عرضي (ATR={atr:.2f})، لا تدخل – [{reco_id}] – {time_now}"
+
+    if score >= 5:
+        strike = round(close_price + (atr * 2))
+        price = 2.0
+        return f"✅ دخول كول من {close_price:.2f} والهدف {close_price + atr:.2f}، العقد {strike} بسعر {price} دولار – [{reco_id}] – {time_now}"
+    elif score <= 2:
+        strike = round(close_price - (atr * 2))
+        price = 1.5
+        return f"🔻 دخول بوت من {close_price:.2f} والهدف {close_price - atr:.2f}، العقد {strike} بسعر {price} دولار – [{reco_id}] – {time_now}"
+    else:
+        return f"🚫 السوق غير واضح الآن، الترقب أفضل – [{reco_id}] – {time_now}"
+
+# --- إرسال توصية إلى تيليجرام ---
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    requests.post(url, data=payload)
+
+# --- التشغيل الرئيسي ---
+if _name_ == "_main_":
+    # اجلب البيانات من finnhub
+    try:
+        df = fetch_finnhub_ohlc(SYMBOL, limit=LIMIT, interval=INTERVAL)
+        reco = decision_engine_full(df)
+        send_telegram_message(reco)
+        print("تم إرسال التوصية إلى تيليجرام بنجاح.")
+    except Exception as e:
+        print("حدث خطأ:", e)بوت
